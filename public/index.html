@@ -10,7 +10,7 @@
 		<div class="page-shell">
 			<header class="hero">
 				<p class="eyebrow">Playable Extractor</p>
-				<h1>选择单个试玩 HTML 并导出其中的媒体资源</h1>
+				<h1>Applovin Playable Extractor</h1>
 				<p class="hero-copy">
 					把导出的试玩 HTML 当成入口。工具会扫描 HTML
 					本体、脚本引用以及预览时运行中暴露出来的 data
@@ -18,40 +18,64 @@
 				</p>
 			</header>
 
-			<main class="layout">
-				<section class="panel controls-panel">
-					<div class="field-row">
-						<label for="selectedPlayablePath">当前试玩 HTML</label>
-						<div class="path-row">
-							<input
-								id="selectedPlayablePath"
-								type="text"
-								readonly
-								placeholder="点击右侧按钮选择一个 HTML"
-								spellcheck="false" />
-							<button id="pickPlayableButton" class="solid">
-								选择 HTML
+			<main class="workspace" id="workspaceLayout">
+				<div class="left-column">
+					<section class="panel controls-panel">
+						<div class="field-row">
+							<label for="selectedPlayablePath"
+								>当前试玩 HTML</label
+							>
+							<div class="path-row">
+								<input
+									id="selectedPlayablePath"
+									type="text"
+									readonly
+									placeholder="点击右侧按钮选择一个 HTML"
+									spellcheck="false" />
+								<button id="pickPlayableButton" class="solid">
+									选择 HTML
+								</button>
+							</div>
+						</div>
+
+						<div class="toolbar">
+							<button id="scanSelectedButton" class="solid">
+								扫描当前试玩
+							</button>
+							<button id="chooseDirectoryButton">
+								选择下载目录
+							</button>
+							<button
+								id="downloadSelectedButton"
+								class="solid accent">
+								下载当前资源
 							</button>
 						</div>
-					</div>
 
-					<div class="toolbar">
-						<button id="scanSelectedButton" class="solid">
-							扫描当前试玩
-						</button>
-						<button id="chooseDirectoryButton">选择下载目录</button>
-						<button
-							id="downloadSelectedButton"
-							class="solid accent">
-							下载当前资源
-						</button>
-					</div>
+						<div class="status-bar">
+							<span id="directoryStatus">未选择下载目录</span>
+							<span id="scanStatus">等待选择 HTML</span>
+						</div>
+					</section>
 
-					<div class="status-bar">
-						<span id="directoryStatus">未选择下载目录</span>
-						<span id="scanStatus">等待选择 HTML</span>
-					</div>
-				</section>
+					<section class="panel resources-panel">
+						<div class="panel-heading">
+							<div>
+								<p class="eyebrow">Extracted Assets</p>
+								<h2>资源清单</h2>
+							</div>
+							<div id="resourceSummary" class="resource-summary">
+								0 个资源
+							</div>
+						</div>
+						<div
+							id="resourceTable"
+							class="resource-table empty-state">
+							先点击“选择
+							HTML”，再执行扫描或直接预览等待运行时捕获。
+						</div>
+					</section>
+				</div>
 
 				<section class="panel preview-panel">
 					<div class="panel-heading">
@@ -63,21 +87,19 @@
 							运行时监听未开始
 						</div>
 					</div>
-					<iframe id="previewFrame" title="Playable preview"></iframe>
-				</section>
-
-				<section class="panel resources-panel">
-					<div class="panel-heading">
-						<div>
-							<p class="eyebrow">Extracted Assets</p>
-							<h2>资源清单</h2>
-						</div>
-						<div id="resourceSummary" class="resource-summary">
-							0 个资源
-						</div>
-					</div>
-					<div id="resourceTable" class="resource-table empty-state">
-						先点击“选择 HTML”，再执行扫描或直接预览等待运行时捕获。
+					<p class="preview-resize-hint">
+						拖动右下角把手来调整预览尺寸
+					</p>
+					<div class="preview-surface">
+						<iframe
+							id="previewFrame"
+							title="Playable preview"></iframe>
+						<div
+							id="previewCornerResizer"
+							class="preview-corner-resizer"
+							role="separator"
+							aria-label="同时调整预览宽度和高度"
+							tabindex="0"></div>
 					</div>
 				</section>
 			</main>

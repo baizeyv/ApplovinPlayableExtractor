@@ -8,6 +8,7 @@ const state = {
 	directoryHandle: null,
 	directoryPath: "",
 	runtimeScanToken: 0,
+	previewFitTimeouts: [],
 };
 
 const RUNTIME_SETTLE_MS = 2200;
@@ -19,6 +20,11 @@ const dom = {
 	scanSelectedButton: document.getElementById("scanSelectedButton"),
 	chooseDirectoryButton: document.getElementById("chooseDirectoryButton"),
 	downloadSelectedButton: document.getElementById("downloadSelectedButton"),
+	workspaceLayout: document.getElementById("workspaceLayout"),
+	leftColumn: document.querySelector(".left-column"),
+	previewPanel: document.querySelector(".preview-panel"),
+	previewCornerResizer: document.getElementById("previewCornerResizer"),
+	previewSurface: document.querySelector(".preview-surface"),
 	previewFrame: document.getElementById("previewFrame"),
 	previewTitle: document.getElementById("previewTitle"),
 	previewMeta: document.getElementById("previewMeta"),
@@ -30,6 +36,18 @@ const dom = {
 
 const PICK_BUTTON_DEFAULT_TEXT = dom.pickPlayableButton.textContent.trim();
 const desktopBridge = window.playableDesktop || null;
+const PREVIEW_WIDTH_STORAGE_KEY = "playable-preview-width";
+const PREVIEW_HEIGHT_STORAGE_KEY = "playable-preview-height";
+const MIN_PREVIEW_WIDTH = 360;
+const MAX_PREVIEW_WIDTH = 920;
+const LEGACY_MIN_PREVIEW_WIDTH = 420;
+const MIN_LEFT_WIDTH = 420;
+const DEFAULT_LEFT_WIDTH = 480;
+const MIN_PREVIEW_HEIGHT = 420;
+const MAX_PREVIEW_HEIGHT = 1200;
+const RESIZER_TRACK_SIZE = 0;
+const WORKSPACE_COLUMN_GAP = 18;
+const WORKSPACE_TOTAL_GAP = WORKSPACE_COLUMN_GAP;
 
 function formatBytes(bytes) {
 	if (bytes == null || Number.isNaN(bytes)) return "大小未知";
@@ -105,11 +123,109 @@ function renderDirectoryStatus() {
 		:	"未选择下载目录";
 }
 
+function setPreviewTitle(value) {
+	const text = value || "未选择试玩";
+	dom.previewTitle.textContent = text;
+	dom.previewTitle.title = text;
+}
+
 function clearPreview() {
 	state.previewFile = "";
-	dom.previewTitle.textContent = "未选择试玩";
+	setPreviewTitle("未选择试玩");
 	dom.previewMeta.textContent = "运行时监听未开始";
 	dom.previewFrame.removeAttribute("src");
+}
+
+function clearPreviewFitTimers() {
+	for (const timeoutId of state.previewFitTimeouts) {
+		clearTimeout(timeoutId);
+	}
+	state.previewFitTimeouts = [];
+}
+
+function fitPreviewFrameContent() {
+	const frameWindow = dom.previewFrame.contentWindow;
+	const frameDocument = dom.previewFrame.contentDocument;
+	if (
+		!frameWindow ||
+		!frameDocument?.documentElement ||
+		!frameDocument.body
+	) {
+		return;
+	}
+	if (frameDocument.documentElement.dataset.playablePreviewAutofit === "1") {
+		return;
+	}
+
+	const html = frameDocument.documentElement;
+	const body = frameDocument.body;
+	const frameWidth = dom.previewFrame.clientWidth;
+	const frameHeight = dom.previewFrame.clientHeight;
+	if (frameWidth <= 0 || frameHeight <= 0) {
+		return;
+	}
+
+	const previousTransform = body.style.transform;
+	const previousTransformOrigin = body.style.transformOrigin;
+	const previousWidth = body.style.width;
+	const previousHeight = body.style.height;
+	const previousMargin = body.style.margin;
+	const previousHtmlOverflow = html.style.overflow;
+	const previousBodyOverflow = body.style.overflow;
+
+	body.style.transform = "none";
+	body.style.transformOrigin = "top left";
+	body.style.width = "";
+	body.style.height = "";
+	body.style.margin = "0";
+	html.style.overflow = "hidden";
+	body.style.overflow = "hidden";
+
+	const naturalWidth = Math.max(
+		html.scrollWidth,
+		body.scrollWidth,
+		html.clientWidth,
+		body.clientWidth,
+	);
+	const naturalHeight = Math.max(
+		html.scrollHeight,
+		body.scrollHeight,
+		html.clientHeight,
+		body.clientHeight,
+	);
+
+	const widthScale = naturalWidth > 0 ? frameWidth / naturalWidth : 1;
+	const heightScale = naturalHeight > 0 ? frameHeight / naturalHeight : 1;
+	const scale = Math.min(1, widthScale, heightScale);
+
+	body.style.margin = "0";
+	body.style.width = `${naturalWidth}px`;
+	body.style.height = `${naturalHeight}px`;
+	body.style.transformOrigin = "top left";
+	body.style.transform = `scale(${scale})`;
+	html.style.overflow = "hidden";
+	body.style.overflow = "hidden";
+
+	body.dataset.playablePreviewOriginalTransform = previousTransform;
+	body.dataset.playablePreviewOriginalTransformOrigin =
+		previousTransformOrigin;
+	body.dataset.playablePreviewOriginalWidth = previousWidth;
+	body.dataset.playablePreviewOriginalHeight = previousHeight;
+	body.dataset.playablePreviewOriginalMargin = previousMargin;
+	html.dataset.playablePreviewOriginalOverflow = previousHtmlOverflow;
+	body.dataset.playablePreviewOriginalOverflow = previousBodyOverflow;
+	body.dataset.playablePreviewScale = String(scale);
+}
+
+function schedulePreviewFit() {
+	clearPreviewFitTimers();
+	const delays = [0, 120, 500, 1400, 2800];
+	for (const delay of delays) {
+		const timeoutId = window.setTimeout(() => {
+			fitPreviewFrameContent();
+		}, delay);
+		state.previewFitTimeouts.push(timeoutId);
+	}
 }
 
 function mergeResourcesForFile(fileName) {
@@ -155,22 +271,36 @@ function renderResourceTable() {
 	rows.forEach(({ fileName: currentFile, resource }, index) => {
 		const row = document.createElement("article");
 		row.className = "resource-row";
+		const downloadName = createDownloadFileName(
+			currentFile,
+			resource,
+			index,
+		);
+		const resourceKind = resource.mimeType.split("/")[0];
+		const extensionLabel = (resource.extension || "bin").toUpperCase();
 
 		const content = document.createElement("div");
 		content.className = "resource-content";
 		content.innerHTML = `
-      <strong>${escapeHtml(createDownloadFileName(currentFile, resource, index))}</strong>
-      <div class="resource-meta">
-        ${escapeHtml(resource.mimeType)} · ${escapeHtml(formatBytes(resource.sizeBytes))}<br>
-        来源: ${escapeHtml(resource.source)}<br>
-        入口试玩: ${escapeHtml(currentFile)}
-      </div>
-      <div class="resource-actions">
-        <button type="button" class="copy-data-uri">复制 data URI</button>
-        <button type="button" class="download-single">下载此项</button>
-      </div>
+		<div class="resource-row-top">
+			<strong class="resource-file-name" title="${escapeHtml(downloadName)}">${escapeHtml(downloadName)}</strong>
+			<span class="resource-size-badge">${escapeHtml(formatBytes(resource.sizeBytes))}</span>
+		</div>
+		<div class="resource-origin">
+			<span class="resource-badge">${escapeHtml(resourceKind)}</span>
+			<span class="resource-badge subtle">${escapeHtml(extensionLabel)}</span>
+		</div>
+		<div class="resource-meta-group">
+			<div class="resource-meta-line">
+				<span class="resource-meta-label">入口</span>
+				<span class="resource-meta-value" title="${escapeHtml(currentFile)}">${escapeHtml(currentFile)}</span>
+			</div>
+			<div class="resource-meta-line">
+				<span class="resource-meta-label">来源</span>
+				<span class="resource-meta-value" title="${escapeHtml(resource.source)}">${escapeHtml(resource.source)}</span>
+			</div>
+		</div>
     `;
-		row.appendChild(content);
 
 		const preview = document.createElement("div");
 		preview.className = "resource-preview";
@@ -178,7 +308,7 @@ function renderResourceTable() {
 			const image = document.createElement("img");
 			image.loading = "lazy";
 			image.src = resource.dataUri;
-			image.alt = createDownloadFileName(currentFile, resource, index);
+			image.alt = downloadName;
 			preview.appendChild(image);
 		} else {
 			const label = document.createElement("span");
@@ -188,7 +318,20 @@ function renderResourceTable() {
 				:	"视频资源";
 			preview.appendChild(label);
 		}
-		row.appendChild(preview);
+
+		const primary = document.createElement("div");
+		primary.className = "resource-primary";
+		primary.appendChild(preview);
+		primary.appendChild(content);
+		row.appendChild(primary);
+
+		const actions = document.createElement("div");
+		actions.className = "resource-actions";
+		actions.innerHTML = `
+		<button type="button" class="copy-data-uri">复制 data URI</button>
+		<button type="button" class="download-single">下载此项</button>
+    `;
+		row.appendChild(actions);
 
 		row.querySelector(".copy-data-uri").addEventListener(
 			"click",
@@ -200,13 +343,320 @@ function renderResourceTable() {
 			"click",
 			async () => {
 				const blob = await decodeDataUri(resource);
-				triggerBlobDownload(
-					blob,
-					createDownloadFileName(currentFile, resource, index),
-				);
+				triggerBlobDownload(blob, downloadName);
 			},
 		);
 		dom.resourceTable.appendChild(row);
+	});
+}
+
+function clampPreviewWidth(width) {
+	return Math.max(MIN_PREVIEW_WIDTH, Math.min(MAX_PREVIEW_WIDTH, width));
+}
+
+function getCurrentLeftColumnWidth() {
+	const storedWidth = Number.parseInt(
+		getComputedStyle(document.documentElement).getPropertyValue(
+			"--left-column-width",
+		),
+		10,
+	);
+	if (Number.isFinite(storedWidth)) {
+		return storedWidth;
+	}
+	const measuredWidth = dom.leftColumn?.getBoundingClientRect().width;
+	return Number.isFinite(measuredWidth) ? measuredWidth : MIN_LEFT_WIDTH;
+}
+
+function syncLeftColumnWidth(preferredWidth) {
+	if (!dom.workspaceLayout || !dom.leftColumn) {
+		return;
+	}
+	if (window.innerWidth <= 900) {
+		document.documentElement.style.removeProperty("--left-column-width");
+		return;
+	}
+
+	const workspaceWidth = dom.workspaceLayout.getBoundingClientRect().width;
+	const maxLeftWidth = Math.max(
+		MIN_LEFT_WIDTH,
+		Math.floor(
+			workspaceWidth -
+				MIN_PREVIEW_WIDTH -
+				RESIZER_TRACK_SIZE -
+				WORKSPACE_TOTAL_GAP,
+		),
+	);
+	const measuredWidth = dom.leftColumn.getBoundingClientRect().width;
+	const storedWidth = Number.parseInt(
+		getComputedStyle(document.documentElement).getPropertyValue(
+			"--left-column-width",
+		),
+		10,
+	);
+	const targetWidth =
+		preferredWidth ??
+		(Number.isFinite(storedWidth) ? storedWidth
+		: Number.isFinite(measuredWidth) && measuredWidth > 0 ?
+			Math.min(measuredWidth, DEFAULT_LEFT_WIDTH)
+		:	DEFAULT_LEFT_WIDTH);
+	const nextWidth = Math.max(
+		MIN_LEFT_WIDTH,
+		Math.min(maxLeftWidth, Math.floor(targetWidth)),
+	);
+	document.documentElement.style.setProperty(
+		"--left-column-width",
+		`${nextWidth}px`,
+	);
+}
+
+function getMaxPreviewWidth() {
+	if (!dom.workspaceLayout) {
+		return MAX_PREVIEW_WIDTH;
+	}
+	const availableWidth = dom.workspaceLayout.getBoundingClientRect().width;
+	const leftWidth = getCurrentLeftColumnWidth();
+	return Math.max(
+		MIN_PREVIEW_WIDTH,
+		Math.min(
+			MAX_PREVIEW_WIDTH,
+			availableWidth -
+				leftWidth -
+				RESIZER_TRACK_SIZE -
+				WORKSPACE_TOTAL_GAP,
+		),
+	);
+}
+
+function setPreviewWidth(width) {
+	const nextWidth = clampPreviewWidth(width);
+	document.documentElement.style.setProperty(
+		"--preview-width",
+		`${nextWidth}px`,
+	);
+	schedulePreviewFit();
+	try {
+		window.localStorage.setItem(
+			PREVIEW_WIDTH_STORAGE_KEY,
+			String(nextWidth),
+		);
+	} catch {
+		// Ignore storage failures in locked-down environments.
+	}
+}
+
+function loadStoredPreviewWidth() {
+	try {
+		const storedValue = window.localStorage.getItem(
+			PREVIEW_WIDTH_STORAGE_KEY,
+		);
+		const parsed = Number.parseInt(storedValue || "", 10);
+		if (Number.isFinite(parsed)) {
+			const nextWidth =
+				parsed === LEGACY_MIN_PREVIEW_WIDTH ? MIN_PREVIEW_WIDTH : (
+					parsed
+				);
+			setPreviewWidth(nextWidth);
+			return true;
+		}
+	} catch {
+		// Ignore storage failures in locked-down environments.
+	}
+	return false;
+}
+
+function clampPreviewHeight(height) {
+	const panel = dom.previewPanel;
+	const surface = dom.previewSurface;
+	if (!panel || !surface) {
+		return Math.max(
+			MIN_PREVIEW_HEIGHT,
+			Math.min(MAX_PREVIEW_HEIGHT, height),
+		);
+	}
+
+	const panelRect = panel.getBoundingClientRect();
+	const surfaceRect = surface.getBoundingClientRect();
+	const workspaceRect = dom.workspaceLayout?.getBoundingClientRect();
+	const panelChromeHeight = panelRect.height - surfaceRect.height;
+	const visibleBottom = Math.min(
+		window.innerHeight,
+		workspaceRect?.bottom ?? window.innerHeight,
+	);
+	const availableHeight = visibleBottom - panelRect.top - panelChromeHeight;
+	const dynamicMaxHeight = Math.max(
+		MIN_PREVIEW_HEIGHT,
+		Math.min(MAX_PREVIEW_HEIGHT, Math.floor(availableHeight)),
+	);
+	if (dom.previewCornerResizer) {
+		dom.previewCornerResizer.setAttribute(
+			"aria-valuemax",
+			String(dynamicMaxHeight),
+		);
+	}
+	return Math.max(MIN_PREVIEW_HEIGHT, Math.min(dynamicMaxHeight, height));
+}
+
+function setPreviewHeight(height) {
+	const nextHeight = clampPreviewHeight(height);
+	document.documentElement.style.setProperty(
+		"--preview-height",
+		`${nextHeight}px`,
+	);
+	schedulePreviewFit();
+	try {
+		window.localStorage.setItem(
+			PREVIEW_HEIGHT_STORAGE_KEY,
+			String(nextHeight),
+		);
+	} catch {
+		// Ignore storage failures in locked-down environments.
+	}
+}
+
+function syncPreviewHeightToViewport() {
+	const currentHeight = Number.parseInt(
+		getComputedStyle(document.documentElement).getPropertyValue(
+			"--preview-height",
+		),
+		10,
+	);
+	if (Number.isFinite(currentHeight)) {
+		setPreviewHeight(currentHeight);
+	}
+}
+
+function loadStoredPreviewHeight() {
+	try {
+		const storedValue = window.localStorage.getItem(
+			PREVIEW_HEIGHT_STORAGE_KEY,
+		);
+		const parsed = Number.parseInt(storedValue || "", 10);
+		if (Number.isFinite(parsed)) {
+			setPreviewHeight(parsed);
+			return true;
+		}
+	} catch {
+		// Ignore storage failures in locked-down environments.
+	}
+	return false;
+}
+
+function registerPreviewResizer() {
+	const cornerResizer = dom.previewCornerResizer;
+	const workspace = dom.workspaceLayout;
+	if (!cornerResizer || !workspace) {
+		return;
+	}
+
+	const getCurrentWidth = () => {
+		const width = Number.parseInt(
+			getComputedStyle(document.documentElement).getPropertyValue(
+				"--preview-width",
+			),
+			10,
+		);
+		return Number.isFinite(width) ? width : 520;
+	};
+
+	const getCurrentHeight = () => {
+		const height = Number.parseInt(
+			getComputedStyle(document.documentElement).getPropertyValue(
+				"--preview-height",
+			),
+			10,
+		);
+		return Number.isFinite(height) ? height : 680;
+	};
+
+	const applyCornerWidthDelta = (startWidth, deltaX) => {
+		if (window.innerWidth <= 900) {
+			return;
+		}
+		const maxWidth = getMaxPreviewWidth();
+		if (maxWidth < MIN_PREVIEW_WIDTH) {
+			return;
+		}
+		setPreviewWidth(startWidth + deltaX);
+	};
+
+	const applyHeightDelta = (startHeight, deltaY) => {
+		setPreviewHeight(startHeight + deltaY);
+	};
+
+	const startPointerResize = (event, onMove) => {
+		event.preventDefault();
+		document.body.classList.add("is-resizing");
+		event.currentTarget.setPointerCapture?.(event.pointerId);
+
+		const handlePointerMove = (moveEvent) => {
+			onMove(moveEvent);
+		};
+
+		const stopResize = () => {
+			document.body.classList.remove("is-resizing");
+			window.removeEventListener("pointermove", handlePointerMove);
+			window.removeEventListener("pointerup", stopResize);
+		};
+
+		window.addEventListener("pointermove", handlePointerMove);
+		window.addEventListener("pointerup", stopResize, { once: true });
+	};
+
+	cornerResizer.addEventListener("pointerdown", (event) => {
+		const startX = event.clientX;
+		const startY = event.clientY;
+		const startWidth = getCurrentWidth();
+		const startHeight = getCurrentHeight();
+		syncLeftColumnWidth();
+		startPointerResize(event, (moveEvent) => {
+			applyCornerWidthDelta(startWidth, moveEvent.clientX - startX);
+			applyHeightDelta(startHeight, moveEvent.clientY - startY);
+		});
+	});
+
+	cornerResizer.addEventListener("keydown", (event) => {
+		const currentWidth = getCurrentWidth();
+		const currentHeight = getCurrentHeight();
+		syncLeftColumnWidth();
+		if (event.key === "ArrowLeft") {
+			event.preventDefault();
+			setPreviewWidth(currentWidth - 24);
+		}
+		if (event.key === "ArrowRight") {
+			event.preventDefault();
+			setPreviewWidth(currentWidth + 24);
+		}
+		if (event.key === "ArrowUp") {
+			event.preventDefault();
+			setPreviewHeight(currentHeight - 24);
+		}
+		if (event.key === "ArrowDown") {
+			event.preventDefault();
+			setPreviewHeight(currentHeight + 24);
+		}
+	});
+}
+
+function registerPreviewAutoFit() {
+	dom.previewFrame.addEventListener("load", () => {
+		syncPreviewHeightToViewport();
+		schedulePreviewFit();
+	});
+
+	window.addEventListener("resize", () => {
+		syncLeftColumnWidth(getCurrentLeftColumnWidth());
+		const currentWidth = Number.parseInt(
+			getComputedStyle(document.documentElement).getPropertyValue(
+				"--preview-width",
+			),
+			10,
+		);
+		if (Number.isFinite(currentWidth)) {
+			setPreviewWidth(currentWidth);
+		}
+		syncPreviewHeightToViewport();
+		schedulePreviewFit();
 	});
 }
 
@@ -343,8 +793,9 @@ function previewPlayable(fileName) {
 	}
 	state.selectedFile = fileName;
 	state.previewFile = fileName;
-	dom.previewTitle.textContent = fileName;
+	setPreviewTitle(fileName);
 	dom.previewMeta.textContent = "运行时监听进行中";
+	clearPreviewFitTimers();
 	dom.previewFrame.src = `/preview?sourceDir=${encodeURIComponent(state.sourceDir)}&file=${encodeURIComponent(fileName)}`;
 	renderResourceTable();
 }
@@ -473,7 +924,7 @@ function registerRuntimeCollector() {
 		}
 
 		if (event.data.type === "status") {
-			dom.previewMeta.textContent = `运行时监听已挂载 · ${fileName}`;
+			dom.previewMeta.textContent = "运行时监听已挂载";
 			return;
 		}
 
@@ -538,8 +989,20 @@ function runWithStatus(task) {
 }
 
 async function bootstrap() {
+	syncLeftColumnWidth(DEFAULT_LEFT_WIDTH);
+	const hasStoredPreviewWidth = loadStoredPreviewWidth();
+	const hasStoredPreviewHeight = loadStoredPreviewHeight();
+	if (!hasStoredPreviewWidth) {
+		setPreviewWidth(getMaxPreviewWidth());
+	}
+	if (!hasStoredPreviewHeight) {
+		setPreviewHeight(MAX_PREVIEW_HEIGHT);
+	}
+	syncPreviewHeightToViewport();
 	registerActions();
 	registerRuntimeCollector();
+	registerPreviewResizer();
+	registerPreviewAutoFit();
 	await loadConfig();
 }
 

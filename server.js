@@ -1351,6 +1351,76 @@ function runtimeCollectorInstaller(collectorContext) {
 		};
 	}
 
+	let previewFitRafId = 0;
+	const previewFitTimers = new Set();
+	const applyPreviewAutoFit = () => {
+		const html = document.documentElement;
+		const body = document.body;
+		if (!html || !body) {
+			return;
+		}
+
+		html.dataset.playablePreviewAutofit = "1";
+		body.style.transform = "none";
+		body.style.transformOrigin = "top left";
+		body.style.width = "";
+		body.style.height = "";
+		body.style.margin = "0";
+		html.style.overflow = "hidden";
+		body.style.overflow = "hidden";
+
+		const naturalWidth = Math.max(
+			html.scrollWidth,
+			body.scrollWidth,
+			html.clientWidth,
+			body.clientWidth,
+		);
+		const naturalHeight = Math.max(
+			html.scrollHeight,
+			body.scrollHeight,
+			html.clientHeight,
+			body.clientHeight,
+		);
+		const viewportWidth =
+			window.innerWidth || html.clientWidth || naturalWidth;
+		const viewportHeight =
+			window.innerHeight || html.clientHeight || naturalHeight;
+		const scale = Math.min(
+			1,
+			naturalWidth > 0 ? viewportWidth / naturalWidth : 1,
+			naturalHeight > 0 ? viewportHeight / naturalHeight : 1,
+		);
+
+		body.style.width = `${naturalWidth}px`;
+		body.style.height = `${naturalHeight}px`;
+		body.style.transformOrigin = "top left";
+		body.style.transform = `scale(${scale})`;
+		body.dataset.playablePreviewScale = String(scale);
+	};
+	const schedulePreviewAutoFit = () => {
+		if (previewFitRafId) {
+			cancelAnimationFrame(previewFitRafId);
+		}
+		for (const timerId of previewFitTimers) {
+			clearTimeout(timerId);
+		}
+		previewFitTimers.clear();
+
+		previewFitRafId = requestAnimationFrame(() => {
+			previewFitRafId = 0;
+			applyPreviewAutoFit();
+		});
+
+		for (const delay of [120, 500, 1400, 2800]) {
+			const timerId = setTimeout(() => {
+				previewFitTimers.delete(timerId);
+				applyPreviewAutoFit();
+			}, delay);
+			previewFitTimers.add(timerId);
+		}
+	};
+	window.addEventListener("resize", schedulePreviewAutoFit);
+
 	const inspectNode = (node) => {
 		if (!node || node.nodeType !== 1) return;
 		for (const attribute of ["src", "href", "poster"]) {
@@ -1414,6 +1484,7 @@ function runtimeCollectorInstaller(collectorContext) {
 				inspectNode(node);
 			}
 		}
+		schedulePreviewAutoFit();
 	}).observe(document.documentElement || document, {
 		subtree: true,
 		childList: true,
@@ -1433,6 +1504,7 @@ function runtimeCollectorInstaller(collectorContext) {
 	const announceReady = () => {
 		installJsZipHooks();
 		scanDocument();
+		schedulePreviewAutoFit();
 		setTimeout(scanDocument, 400);
 		setTimeout(scanDocument, 1400);
 		setTimeout(installJsZipHooks, 400);
