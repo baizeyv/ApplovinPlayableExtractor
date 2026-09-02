@@ -731,6 +731,8 @@ function runtimeCollectorInstaller(collectorContext) {
 	window.__playableExtractorInstallSource =
 		runtimeCollectorInstaller.toString();
 	window.__playableExtractorCollectorContext = collectorContext;
+	const shouldCollectRuntimeResources =
+		collectorContext?.collectRuntimeResources !== false;
 
 	const seen = new Set();
 	const isDataUri = (value) =>
@@ -1019,6 +1021,7 @@ function runtimeCollectorInstaller(collectorContext) {
 						collectorContext?.sourceDir ||
 						null,
 					localFilePath: parsed.searchParams.get("file"),
+					collectRuntimeResources: shouldCollectRuntimeResources,
 					remoteUrl: null,
 				};
 			}
@@ -1030,6 +1033,7 @@ function runtimeCollectorInstaller(collectorContext) {
 						null,
 					sourceDir: null,
 					localFilePath: null,
+					collectRuntimeResources: shouldCollectRuntimeResources,
 					remoteUrl: parsed.searchParams.get("url"),
 				};
 			}
@@ -1522,8 +1526,376 @@ function runtimeCollectorInstaller(collectorContext) {
 	}
 }
 
+function previewRuntimeInstaller(collectorContext) {
+	if (window.__playableExtractorInstalled) {
+		return;
+	}
+
+	window.__playableExtractorInstalled = true;
+	window.__playableExtractorInstall = previewRuntimeInstaller;
+	window.__playableExtractorInstallSource =
+		previewRuntimeInstaller.toString();
+	window.__playableExtractorCollectorContext = collectorContext;
+
+	const normalizeWindowsPath = (value) =>
+		String(value || "").replace(/\\/g, "/");
+	const stripDrive = (value) =>
+		normalizeWindowsPath(value).replace(/^[a-z]:/i, "");
+	const joinPathSegments = (parts) => {
+		const output = [];
+		for (const part of parts) {
+			if (!part || part === ".") continue;
+			if (part === "..") {
+				output.pop();
+				continue;
+			}
+			output.push(part);
+		}
+		return output;
+	};
+	const resolveLocalFile = (value) => {
+		if (!collectorContext?.localFilePath || !collectorContext?.sourceDir) {
+			return null;
+		}
+		if (/^(data:|blob:|javascript:|mailto:|tel:|#)/i.test(value)) {
+			return null;
+		}
+		if (/^[a-z]+:/i.test(value) || value.startsWith("//")) {
+			return null;
+		}
+
+		const sourceDir = normalizeWindowsPath(collectorContext.sourceDir);
+		const localFilePath = normalizeWindowsPath(
+			collectorContext.localFilePath,
+		);
+		const driveMatch = /^[a-z]:/i.exec(localFilePath);
+		const drivePrefix = driveMatch ? driveMatch[0] : "";
+		const sourceSegments = stripDrive(sourceDir).split("/").filter(Boolean);
+		const baseSegments = stripDrive(localFilePath)
+			.split("/")
+			.filter(Boolean);
+		baseSegments.pop();
+		const inputSegments = value.split("/").filter(Boolean);
+		const resolvedSegments =
+			value.startsWith("/") ?
+				joinPathSegments([...sourceSegments, ...inputSegments])
+			:	joinPathSegments([...baseSegments, ...inputSegments]);
+		return `${drivePrefix}/${resolvedSegments.join("/")}`;
+	};
+	const proxifyUrl = (value) => {
+		if (typeof value !== "string") return value;
+		if (/^https?:\/\//i.test(value)) {
+			return (
+				"/proxy?entryFileName=" +
+				encodeURIComponent(collectorContext?.entryFileName || "") +
+				"&collectRuntime=0&url=" +
+				encodeURIComponent(value)
+			);
+		}
+		if (value.startsWith("//")) {
+			return (
+				"/proxy?entryFileName=" +
+				encodeURIComponent(collectorContext?.entryFileName || "") +
+				"&collectRuntime=0&url=" +
+				encodeURIComponent("https:" + value)
+			);
+		}
+
+		const localFile = resolveLocalFile(value);
+		if (localFile) {
+			return (
+				"/local-asset?entryFileName=" +
+				encodeURIComponent(collectorContext?.entryFileName || "") +
+				"&collectRuntime=0&sourceDir=" +
+				encodeURIComponent(collectorContext.sourceDir) +
+				"&file=" +
+				encodeURIComponent(localFile)
+			);
+		}
+
+		if (collectorContext?.remoteUrl) {
+			try {
+				return (
+					"/proxy?entryFileName=" +
+					encodeURIComponent(collectorContext?.entryFileName || "") +
+					"&collectRuntime=0&url=" +
+					encodeURIComponent(
+						new URL(value, collectorContext.remoteUrl).href,
+					)
+				);
+			} catch (error) {
+				console.warn("relative remote URL resolution failed", error);
+			}
+		}
+
+		return value;
+	};
+	const forwardUp = (message) => {
+		try {
+			if (window.parent && window.parent !== window) {
+				window.parent.postMessage(message, "*");
+			}
+		} catch (error) {
+			console.warn("postMessage failed", error);
+		}
+	};
+	const post = (type, payload) => {
+		forwardUp({
+			source: "playable-extractor",
+			type,
+			payload: {
+				entryFileName: collectorContext?.entryFileName || null,
+				...payload,
+			},
+		});
+	};
+	const getContextFromFrame = (frame) => {
+		const src = frame?.getAttribute("src") || frame?.src || "";
+		try {
+			const parsed = new URL(src, window.location.href);
+			if (parsed.origin !== window.location.origin) {
+				return collectorContext;
+			}
+			if (parsed.pathname === "/local-asset") {
+				return {
+					entryFileName:
+						parsed.searchParams.get("entryFileName") ||
+						collectorContext?.entryFileName ||
+						null,
+					sourceDir:
+						parsed.searchParams.get("sourceDir") ||
+						collectorContext?.sourceDir ||
+						null,
+					localFilePath: parsed.searchParams.get("file"),
+					collectRuntimeResources: false,
+					remoteUrl: null,
+				};
+			}
+			if (parsed.pathname === "/proxy") {
+				return {
+					entryFileName:
+						parsed.searchParams.get("entryFileName") ||
+						collectorContext?.entryFileName ||
+						null,
+					sourceDir: null,
+					localFilePath: null,
+					collectRuntimeResources: false,
+					remoteUrl: parsed.searchParams.get("url"),
+				};
+			}
+		} catch (error) {
+			console.warn("frame context parse failed", error);
+		}
+		return collectorContext;
+	};
+	const injectInstallerIntoDocument = (doc, nextContext) => {
+		try {
+			if (
+				!doc?.defaultView ||
+				doc.defaultView.__playableExtractorInstalled
+			) {
+				return;
+			}
+			const script = doc.createElement("script");
+			const serializedContext = JSON.stringify(nextContext).replace(
+				/</g,
+				"\\u003c",
+			);
+			script.textContent =
+				"(" +
+				window.__playableExtractorInstallSource +
+				")(" +
+				serializedContext +
+				");";
+			(doc.head || doc.documentElement || doc.body).appendChild(script);
+			script.remove();
+		} catch (error) {
+			console.warn("iframe injection failed", error);
+		}
+	};
+	const installIntoFrame = (frame) => {
+		if (!frame || frame.__playableExtractorFrameHooked) return;
+		frame.__playableExtractorFrameHooked = true;
+		const install = () => {
+			try {
+				injectInstallerIntoDocument(
+					frame.contentDocument,
+					getContextFromFrame(frame),
+				);
+			} catch (error) {
+				console.warn("frame install failed", error);
+			}
+		};
+		frame.addEventListener("load", install);
+		install();
+	};
+	const wrapSetter = (Ctor, property, rewriter) => {
+		if (!Ctor?.prototype) return;
+		const descriptor = Object.getOwnPropertyDescriptor(
+			Ctor.prototype,
+			property,
+		);
+		if (!descriptor?.set || !descriptor?.get) return;
+		Object.defineProperty(Ctor.prototype, property, {
+			configurable: true,
+			enumerable: descriptor.enumerable,
+			get: descriptor.get,
+			set(value) {
+				const nextValue = rewriter ? rewriter.call(this, value) : value;
+				return descriptor.set.call(this, nextValue);
+			},
+		});
+	};
+
+	window.addEventListener("message", (event) => {
+		if (event.data?.source === "playable-extractor") {
+			forwardUp(event.data);
+		}
+	});
+
+	wrapSetter(HTMLImageElement, "src", proxifyUrl);
+	wrapSetter(HTMLAudioElement, "src", proxifyUrl);
+	wrapSetter(HTMLVideoElement, "src", proxifyUrl);
+	wrapSetter(HTMLSourceElement, "src", proxifyUrl);
+	wrapSetter(HTMLScriptElement, "src", proxifyUrl);
+	wrapSetter(HTMLIFrameElement, "src", proxifyUrl);
+
+	const originalFetch = window.fetch;
+	if (originalFetch) {
+		window.fetch = function (...args) {
+			const candidate = args[0];
+			const proxiedArgs = [...args];
+			if (typeof candidate === "string") {
+				proxiedArgs[0] = proxifyUrl(candidate);
+			} else if (candidate instanceof URL) {
+				proxiedArgs[0] = proxifyUrl(candidate.href);
+			} else if (
+				typeof Request !== "undefined" &&
+				candidate instanceof Request &&
+				typeof candidate.url === "string"
+			) {
+				proxiedArgs[0] = new Request(
+					proxifyUrl(candidate.url),
+					candidate,
+				);
+			}
+			return originalFetch.apply(this, proxiedArgs);
+		};
+	}
+
+	const originalOpen = XMLHttpRequest.prototype.open;
+	XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+		const proxiedUrl = typeof url === "string" ? proxifyUrl(url) : url;
+		return originalOpen.call(this, method, proxiedUrl, ...rest);
+	};
+
+	let previewFitRafId = 0;
+	const previewFitTimers = new Set();
+	const applyPreviewAutoFit = () => {
+		const html = document.documentElement;
+		const body = document.body;
+		if (!html || !body) {
+			return;
+		}
+
+		html.dataset.playablePreviewAutofit = "1";
+		body.style.transform = "none";
+		body.style.transformOrigin = "top left";
+		body.style.width = "";
+		body.style.height = "";
+		body.style.margin = "0";
+		html.style.overflow = "hidden";
+		body.style.overflow = "hidden";
+
+		const naturalWidth = Math.max(
+			html.scrollWidth,
+			body.scrollWidth,
+			html.clientWidth,
+			body.clientWidth,
+		);
+		const naturalHeight = Math.max(
+			html.scrollHeight,
+			body.scrollHeight,
+			html.clientHeight,
+			body.clientHeight,
+		);
+		const viewportWidth =
+			window.innerWidth || html.clientWidth || naturalWidth;
+		const viewportHeight =
+			window.innerHeight || html.clientHeight || naturalHeight;
+		const scale = Math.min(
+			1,
+			naturalWidth > 0 ? viewportWidth / naturalWidth : 1,
+			naturalHeight > 0 ? viewportHeight / naturalHeight : 1,
+		);
+
+		body.style.width = `${naturalWidth}px`;
+		body.style.height = `${naturalHeight}px`;
+		body.style.transformOrigin = "top left";
+		body.style.transform = `scale(${scale})`;
+		body.dataset.playablePreviewScale = String(scale);
+	};
+	const schedulePreviewAutoFit = () => {
+		if (previewFitRafId) {
+			cancelAnimationFrame(previewFitRafId);
+		}
+		for (const timerId of previewFitTimers) {
+			clearTimeout(timerId);
+		}
+		previewFitTimers.clear();
+
+		previewFitRafId = requestAnimationFrame(() => {
+			previewFitRafId = 0;
+			applyPreviewAutoFit();
+		});
+
+		for (const delay of [120, 500, 1400, 2800]) {
+			const timerId = setTimeout(() => {
+				previewFitTimers.delete(timerId);
+				applyPreviewAutoFit();
+			}, delay);
+			previewFitTimers.add(timerId);
+		}
+	};
+	window.addEventListener("resize", schedulePreviewAutoFit);
+
+	new MutationObserver(() => {
+		for (const frame of document.querySelectorAll("iframe")) {
+			installIntoFrame(frame);
+		}
+		schedulePreviewAutoFit();
+	}).observe(document.documentElement || document, {
+		subtree: true,
+		childList: true,
+		attributes: true,
+		attributeFilter: ["src", "href", "poster", "style"],
+	});
+
+	const announceReady = () => {
+		for (const frame of document.querySelectorAll("iframe")) {
+			installIntoFrame(frame);
+		}
+		schedulePreviewAutoFit();
+		setTimeout(schedulePreviewAutoFit, 400);
+		setTimeout(schedulePreviewAutoFit, 1400);
+		post("status", { ready: true, title: document.title || "" });
+	};
+
+	if (document.readyState === "loading") {
+		window.addEventListener("DOMContentLoaded", announceReady, {
+			once: true,
+		});
+	} else {
+		announceReady();
+	}
+}
+
 function buildRuntimeCollectorScript(context) {
-	return `<script>(${runtimeCollectorInstaller.toString()})(${JSON.stringify(context).replace(/</g, "\\u003c")});</script>`;
+	const installer =
+		context?.collectRuntimeResources === false ?
+			previewRuntimeInstaller
+		:	runtimeCollectorInstaller;
+	return `<script>(${installer.toString()})(${JSON.stringify(context).replace(/</g, "\\u003c")});</script>`;
 }
 
 function decodeHtmlAttribute(value) {
@@ -1686,6 +2058,8 @@ async function handlePreview(req, res, url) {
 		url.searchParams.get("sourceDir"),
 	);
 	const fileName = url.searchParams.get("file");
+	const collectRuntimeResources =
+		url.searchParams.get("collectRuntime") === "1";
 	if (!fileName) {
 		return sendJson(res, 400, { error: "Missing file parameter" });
 	}
@@ -1700,6 +2074,7 @@ async function handlePreview(req, res, url) {
 			200,
 			rewriteHtmlDocument(html, {
 				entryFileName: fileName,
+				collectRuntimeResources,
 				sourceDir,
 				localFilePath: targetFile,
 				remoteUrl: null,
@@ -1736,6 +2111,8 @@ async function handleLocalAsset(res, url) {
 				rewriteHtmlDocument(html, {
 					entryFileName:
 						url.searchParams.get("entryFileName") || null,
+					collectRuntimeResources:
+						url.searchParams.get("collectRuntime") === "1",
 					sourceDir,
 					localFilePath: resolved,
 					remoteUrl: null,
@@ -1813,6 +2190,8 @@ async function handleProxy(req, res, url) {
 				rewriteHtmlDocument(html, {
 					entryFileName:
 						url.searchParams.get("entryFileName") || null,
+					collectRuntimeResources:
+						url.searchParams.get("collectRuntime") === "1",
 					sourceDir: null,
 					localFilePath: null,
 					remoteUrl: targetUrl,

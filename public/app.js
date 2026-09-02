@@ -138,6 +138,14 @@ function clearPreview() {
 	dom.previewFrame.removeAttribute("src");
 }
 
+function preparePreviewSelection(fileName) {
+	state.previewFile = "";
+	setPreviewTitle(fileName || "未选择试玩");
+	dom.previewMeta.textContent =
+		fileName ? "等待手动加载" : "运行时监听未开始";
+	dom.previewFrame.removeAttribute("src");
+}
+
 function clearPreviewFitTimers() {
 	for (const timeoutId of state.previewFitTimeouts) {
 		clearTimeout(timeoutId);
@@ -801,7 +809,7 @@ function previewPlayable(fileName) {
 	dom.previewMeta.textContent =
 		state.runtimeCollectionEnabled ? "运行时监听进行中" : "预览已加载";
 	clearPreviewFitTimers();
-	dom.previewFrame.src = `/preview?sourceDir=${encodeURIComponent(state.sourceDir)}&file=${encodeURIComponent(fileName)}`;
+	dom.previewFrame.src = `/preview?sourceDir=${encodeURIComponent(state.sourceDir)}&file=${encodeURIComponent(fileName)}&collectRuntime=${state.runtimeCollectionEnabled ? "1" : "0"}`;
 	renderResourceTable();
 }
 
