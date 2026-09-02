@@ -5,6 +5,7 @@ const state = {
 	scanResults: new Map(),
 	runtimeResults: new Map(),
 	previewFile: "",
+	runtimeCollectionEnabled: false,
 	directoryHandle: null,
 	directoryPath: "",
 	runtimeScanToken: 0,
@@ -131,6 +132,7 @@ function setPreviewTitle(value) {
 
 function clearPreview() {
 	state.previewFile = "";
+	state.runtimeCollectionEnabled = false;
 	setPreviewTitle("未选择试玩");
 	dom.previewMeta.textContent = "运行时监听未开始";
 	dom.previewFrame.removeAttribute("src");
@@ -709,6 +711,7 @@ async function pickPlayable() {
 		state.selectedFilePath = payload.filePath;
 		state.scanResults.clear();
 		state.runtimeResults.clear();
+		state.runtimeCollectionEnabled = false;
 		state.runtimeScanToken += 1;
 		renderSelectedPlayablePath();
 		renderResourceTable();
@@ -727,6 +730,7 @@ async function scanSelectedPlayables() {
 	}
 
 	state.runtimeResults.delete(fileName);
+	state.runtimeCollectionEnabled = true;
 	const runtimeScanToken = ++state.runtimeScanToken;
 	dom.scanStatus.textContent = `正在扫描: ${fileName}`;
 	const response = await fetch("/api/scan", {
@@ -794,7 +798,8 @@ function previewPlayable(fileName) {
 	state.selectedFile = fileName;
 	state.previewFile = fileName;
 	setPreviewTitle(fileName);
-	dom.previewMeta.textContent = "运行时监听进行中";
+	dom.previewMeta.textContent =
+		state.runtimeCollectionEnabled ? "运行时监听进行中" : "预览已加载";
 	clearPreviewFitTimers();
 	dom.previewFrame.src = `/preview?sourceDir=${encodeURIComponent(state.sourceDir)}&file=${encodeURIComponent(fileName)}`;
 	renderResourceTable();
@@ -924,7 +929,14 @@ function registerRuntimeCollector() {
 		}
 
 		if (event.data.type === "status") {
-			dom.previewMeta.textContent = "运行时监听已挂载";
+			dom.previewMeta.textContent =
+				state.runtimeCollectionEnabled ? "运行时监听已挂载" : (
+					"预览已加载"
+				);
+			return;
+		}
+
+		if (!state.runtimeCollectionEnabled) {
 			return;
 		}
 
